@@ -14,6 +14,7 @@ import struct
 import socket
 import os
 import sys
+import time
 
 from twisted.internet import protocol, base, fdesc, error, defer
 from twisted.internet import reactor, threads
@@ -31,6 +32,31 @@ NETBSD=sys.platform.startswith("netbsd")
 DARWIN=sys.platform.startswith("darwin")
 SOLARIS=sys.platform.startswith("sunos")
 WINDOWS=sys.platform.startswith("win32")
+
+from scapy.all import RawPcapWriter, MTU, BasePacketList, conf
+class PcapWriter(RawPcapWriter):
+    def __init__(self, filename, linktype=None, gz=False, endianness="",
+                 append=False, sync=False):
+        RawPcapWriter.__init__(self, filename, linktype=None, gz=False,
+                               endianness="", append=False, sync=False)
+        fdesc.setNonBlocking(self.f)
+
+    def _write_header(self, pkt):
+        if self.linktype == None:
+            if type(pkt) is list or type(pkt) is tuple or isinstance(pkt, BasePacketList):
+                pkt = pkt[0]
+            try:
+                self.linktype = conf.l2types[pkt.__class__]
+            except KeyError:
+                self.linktype = 1
+        RawPcapWriter._write_header(self, pkt)
+
+    def _write_packet(self, packet):
+        sec = int(packet.time)
+        usec = int(round((packet.time-sec)*1000000))
+        s = str(packet)
+        caplen = len(s)
+        RawPcapWriter._write_packet(self, s, sec, usec, caplen, caplen)
 
 class ScapySocket(object):
     MTU = 1500
@@ -60,9 +86,12 @@ class Scapy(object):
     min = 2
     max = 6
     debug = True
+    write_only_answers = False
+    pcapwriter = None
+    recv = False
 
     def __init__(self, pkts=None, maxPacketSize=8192, reactor=None, filter=None,
-            iface=None, nofilter=None):
+            iface=None, nofilter=None, pcapfile=None):
 
         if self.debug:
             log.startLogging(sys.stdout)
@@ -91,7 +120,9 @@ class Scapy(object):
         self.startID = self._reactor.callWhenRunning(self._start)
 
         self.deferred = defer.Deferred()
-        self.recv = False
+
+        if pcapfile:
+            self.pcapwriter = PcapWriter(pcapfile)
 
     def _buildSocket(self, filter=None, iface=None, nofilter=None):
         self.socket = ScapySocket(filter, iface, nofilter)
@@ -135,6 +166,10 @@ class Scapy(object):
         @param question: the sent packet that matches that response.
 
         """
+
+        if self.pcapwriter and self.write_only_answers:
+            self.pcapwriter.write(question)
+            self.pcapwriter.write(answer)
         self.answer_count += 1
         if self.answer_count >= self.total_count:
             print "Got all the answers I need"
@@ -176,6 +211,8 @@ class Scapy(object):
         received packet.
         """
         pkt = self.socket.recv()
+        if self.pcapwriter and not self.write_only_answers:
+            self.pcapwriter.write(pkt)
         self.processPacket(pkt)
 
         h = pkt.hashret()
@@ -214,7 +251,7 @@ class Scapy(object):
         """
         self.socket.send(pkt)
 
-    def sr(self, pkts, filter=None, iface=None, nofilter=0):
+    def sr(self, pkts, filter=None, iface=None, nofilter=0, *args, **kw):
         """
         Wraps the scapy sr function.
 
@@ -236,7 +273,7 @@ class Scapy(object):
         self.recv = True
         self._sendrcv(pkts, filter=filter, iface=iface, nofilter=nofilter)
 
-    def send(self, pkts, filter=None, iface=None, nofilter=0):
+    def send(self, pkts, filter=None, iface=None, nofilter=0, *args, **kw):
         """
         Wraps the scapy send function. Its the same as send and receive, except
         it does not receive. Who would have ever guessed? ;)
@@ -301,12 +338,12 @@ class Scapy(object):
         self.threadpool.stop()
         self.running = False
 
-def txsr(arg):
-    tr = Scapy()
-    tr.sr(arg)
+def txsr(*args, **kw):
+    tr = Scapy(*args, **kw)
+    tr.sr(*args, **kw)
     return tr.deferred
 
-def txsend(arg):
-    tr = Scapy()
-    tr.send(arg)
+def txsend(*arg, **kw):
+    tr = Scapy(*arg, **kw)
+    tr.send(*arg, **kw)
     return tr.deferred
