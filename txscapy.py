@@ -18,7 +18,6 @@ import time
 
 from twisted.internet import protocol, base, fdesc, error, defer
 from twisted.internet import reactor, threads
-from twisted.pair import raw, ip
 from twisted.python import log
 from zope.interface import implements
 
